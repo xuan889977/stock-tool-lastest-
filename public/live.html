@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>实时量价分析</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+</head>
+<body>
+  <div class="container">
+    <h1 id="title">实时量价分析</h1>
+    <div id="status" class="status">正在连接实时行情...</div>
+
+    <div class="card">
+      <div id="price" class="price">--</div>
+
+      <div class="grid">
+        <div class="item"><div class="label">最新成交价</div><div id="latestPrice" class="value">--</div></div>
+        <div class="item"><div class="label">最后成交时间</div><div id="lastTradeTime" class="value">--</div></div>
+        <div class="item"><div class="label">1秒成交量</div><div id="secondVolume" class="value">0</div></div>
+        <div class="item"><div class="label">累计成交量</div><div id="totalVolume" class="value">0</div></div>
+
+        <div class="item"><div class="label">VWAP</div><div id="vwap" class="value">--</div></div>
+        <div class="item"><div class="label">VWAP状态</div><div id="vwapStatus" class="value hold">--</div></div>
+        <div class="item"><div class="label">量价四象限</div><div id="quadrant" class="value hold">--</div></div>
+        <div class="item"><div class="label">风险等级</div><div id="riskLevel" class="value hold">--</div></div>
+
+        <div class="item"><div class="label">买盘压力</div><div id="buyPressure" class="value buy">0</div></div>
+        <div class="item"><div class="label">卖盘压力</div><div id="sellPressure" class="value risk">0</div></div>
+        <div class="item"><div class="label">当前分钟量</div><div id="minuteVolume" class="value">0</div></div>
+        <div class="item"><div class="label">放量倍数</div><div id="volumeBoost" class="value">--</div></div>
+      </div>
+
+      <div id="mainSignal" class="advice hold">等待数据...</div>
+    </div>
+
+    <div class="section">
+      <h2>📊 TradingView 专业K线图</h2>
+      <div id="tradingview_chart"></div>
+    </div>
+
+    <div class="section">
+      <h2>🚨 实时预警中心</h2>
+      <div id="alerts" class="alert-list">
+        <div class="alert-row">等待预警信号...</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>📌 量价信号</h2>
+      <div id="signals" class="signals">
+        <div class="signal neutral">等待实时成交数据...</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>⚡ 实时价格折线图</h2>
+      <canvas id="priceChart"></canvas>
+    </div>
+
+    <div class="note">
+      页面成交量为本页面接收到的推送量，不等于完整全市场成交量。本工具仅供学习参考，不构成投资建议。
+    </div>
+
+    <a href="/">返回首页</a>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
