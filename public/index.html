@@ -5,18 +5,65 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>量价分析工具 V10.1</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="home-body">
-  <div class="home-box">
-    <h1>📈 量价分析工具 V10.1</h1>
-    <p>VWAP + 量价四象限 + 实时预警 + TradingView</p>
+  <main class="home-shell">
+    <section class="home-hero">
+      <div class="hero-copy">
+        <div class="eyebrow">实时量价分析</div>
+        <h1>量价分析工具 V10.1</h1>
+        <p>输入美股代码，查看实时成交、VWAP、量价四象限、预警信号和专业 K 线图。</p>
 
-    <form action="/live.html">
-      <input name="symbol" placeholder="例如 TSLA / AAPL / NVDA" required>
-      <button type="submit">进入分析</button>
-    </form>
+        <form class="search-panel" action="/live.html">
+          <label for="symbol">股票搜索</label>
+          <div class="search-row">
+            <input id="symbol" name="symbol" placeholder="例如 TSLA / AAPL / NVDA" required autocomplete="off">
+            <button type="submit">进入分析</button>
+          </div>
+          <div class="quick-symbols" aria-label="热门股票">
+            <a href="/live.html?symbol=NVDA">NVDA</a>
+            <a href="/live.html?symbol=AAPL">AAPL</a>
+            <a href="/live.html?symbol=TSLA">TSLA</a>
+            <a href="/live.html?symbol=MSFT">MSFT</a>
+            <a href="/live.html?symbol=AMD">AMD</a>
+          </div>
+        </form>
+      </div>
+
+      <div class="market-preview">
+        <div class="preview-header">
+          <div>
+            <div class="label">示例走势图</div>
+            <div class="preview-symbol">NVDA</div>
+          </div>
+          <div class="preview-change">+2.84%</div>
+        </div>
+        <canvas id="homeTrendChart"></canvas>
+      </div>
+    </section>
+
+    <section class="home-features" aria-label="核心功能">
+      <div class="feature-tile">
+        <div class="label">核心指标</div>
+        <strong>VWAP 判断</strong>
+        <span>快速识别价格相对成交均价的位置。</span>
+      </div>
+      <div class="feature-tile">
+        <div class="label">盘中观察</div>
+        <strong>量价四象限</strong>
+        <span>结合分钟成交量和价格方向生成状态。</span>
+      </div>
+      <div class="feature-tile">
+        <div class="label">实时提醒</div>
+        <strong>突破预警</strong>
+        <span>跟踪页面高低点、VWAP 和买卖压力。</span>
+      </div>
+    </section>
 
     <div class="note">本工具仅供学习和参考，不构成投资建议。</div>
-  </div>
+  </main>
+
+  <script src="/home.js"></script>
 </body>
 </html>

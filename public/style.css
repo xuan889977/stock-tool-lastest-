@@ -8,20 +8,145 @@ body {
 
 .home-body {
   min-height: 100vh;
-  display: flex;
-  justify-content: center;
-  align-items: center;
   padding: 0;
+  background: linear-gradient(135deg, #020617 0%, #111827 52%, #052e2b 100%);
 }
 
-.home-box {
-  width: 90%;
-  max-width: 560px;
-  background: #111827;
-  padding: 32px;
+.home-shell {
+  width: min(1180px, calc(100% - 36px));
+  margin: 0 auto;
+  padding: 54px 0 28px;
+}
+
+.home-hero {
+  min-height: calc(100vh - 180px);
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  align-items: center;
+  gap: 32px;
+}
+
+.hero-copy h1 {
+  text-align: left;
+  color: #f8fafc;
+  font-size: 58px;
+  line-height: 1.05;
+  margin: 12px 0 18px;
+}
+
+.hero-copy p {
+  max-width: 640px;
+  color: #cbd5e1;
+  font-size: 18px;
+  line-height: 1.7;
+  margin: 0 0 28px;
+}
+
+.eyebrow {
+  color: #67e8f9;
+  font-weight: bold;
+  letter-spacing: 0;
+}
+
+.search-panel {
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.35);
+}
+
+.search-panel label {
+  display: block;
+  color: #94a3b8;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.search-row,
+.live-search {
+  display: flex;
+  gap: 12px;
+}
+
+.quick-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.quick-symbols a {
+  display: inline-flex;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #1f2937;
+  color: #bfdbfe;
+  font-weight: bold;
+}
+
+.market-preview {
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   border-radius: 22px;
-  text-align: center;
-  box-shadow: 0 18px 50px rgba(0,0,0,0.4);
+  padding: 24px;
+  box-shadow: 0 22px 60px rgba(0,0,0,0.45);
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.preview-symbol {
+  font-size: 34px;
+  font-weight: bold;
+  color: #f8fafc;
+  margin-top: 4px;
+}
+
+.preview-change {
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.1);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: bold;
+}
+
+#homeTrendChart {
+  width: 100%;
+  height: 320px;
+}
+
+.home-features {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 26px;
+}
+
+.feature-tile {
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.feature-tile strong {
+  display: block;
+  color: #f8fafc;
+  margin: 8px 0;
+  font-size: 20px;
+}
+
+.feature-tile span {
+  color: #94a3b8;
+  line-height: 1.6;
 }
 
 .container {
@@ -93,9 +218,18 @@ input {
   width: 90%;
   padding: 14px;
   border-radius: 12px;
-  border: none;
+  border: 1px solid transparent;
   font-size: 16px;
   margin-top: 20px;
+  background: #f8fafc;
+  color: #020617;
+  box-sizing: border-box;
+}
+
+input:focus {
+  outline: none;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.18);
 }
 
 button {
@@ -109,6 +243,29 @@ button {
   font-size: 16px;
   font-weight: bold;
   cursor: pointer;
+}
+
+.search-row input,
+.live-search input {
+  flex: 1;
+  width: auto;
+  margin-top: 0;
+}
+
+.search-row button,
+.live-search button {
+  width: auto;
+  min-width: 132px;
+  margin-top: 0;
+}
+
+.live-search {
+  max-width: 680px;
+  margin: 0 auto 22px;
+  background: #111827;
+  border-radius: 16px;
+  padding: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.28);
 }
 
 #tradingview_chart {
@@ -184,6 +341,23 @@ a {
 }
 
 @media(max-width:900px) {
+  .home-shell {
+    padding-top: 34px;
+  }
+
+  .home-hero,
+  .home-features {
+    grid-template-columns: 1fr;
+  }
+
+  .home-hero {
+    min-height: auto;
+  }
+
+  .hero-copy h1 {
+    font-size: 42px;
+  }
+
   .grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -198,6 +372,28 @@ a {
 }
 
 @media(max-width:520px) {
+  .home-shell {
+    width: min(100% - 24px, 1180px);
+  }
+
+  .hero-copy h1 {
+    font-size: 34px;
+  }
+
+  .search-row,
+  .live-search {
+    flex-direction: column;
+  }
+
+  .search-row button,
+  .live-search button {
+    width: 100%;
+  }
+
+  #homeTrendChart {
+    height: 240px;
+  }
+
   .grid {
     grid-template-columns: 1fr;
   }

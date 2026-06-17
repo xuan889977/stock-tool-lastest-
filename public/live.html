@@ -13,6 +13,11 @@
     <h1 id="title">实时量价分析</h1>
     <div id="status" class="status">正在连接实时行情...</div>
 
+    <form class="live-search" action="/live.html">
+      <input name="symbol" placeholder="搜索股票代码，例如 AAPL / TSLA / NVDA" required autocomplete="off">
+      <button type="submit">切换股票</button>
+    </form>
+
     <div class="card">
       <div id="price" class="price">--</div>
 
