@@ -219,6 +219,10 @@ h1 {
   margin-top: 16px;
 }
 
+.shape-grid {
+  margin-bottom: 16px;
+}
+
 .item {
   background: #1f2937;
   padding: 15px;
@@ -301,8 +305,34 @@ button {
   box-shadow: 0 18px 50px rgba(0,0,0,0.28);
 }
 
-#tradingview_chart {
-  height: 560px;
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.section-title-row h2 {
+  margin: 0;
+}
+
+.mini-status {
+  color: #94a3b8;
+  font-size: 13px;
+  text-align: right;
+}
+
+.market-chart-section canvas,
+#intradayChart {
+  min-height: 580px;
+  max-height: 640px;
+}
+
+.volume-shape-section canvas,
+#volumeShapeChart {
+  min-height: 420px;
+  max-height: 480px;
 }
 
 canvas {
@@ -403,8 +433,14 @@ a {
     font-size: 38px;
   }
 
-  #tradingview_chart {
-    height: 460px;
+  .market-chart-section canvas,
+  #intradayChart {
+    min-height: 470px;
+  }
+
+  .volume-shape-section canvas,
+  #volumeShapeChart {
+    min-height: 340px;
   }
 }
 
@@ -437,5 +473,24 @@ a {
 
   .tape-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .section-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mini-status {
+    text-align: left;
+  }
+
+  .market-chart-section canvas,
+  #intradayChart {
+    min-height: 390px;
+  }
+
+  .volume-shape-section canvas,
+  #volumeShapeChart {
+    min-height: 300px;
   }
 }

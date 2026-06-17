@@ -5,8 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>实时量价分析</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
   <div class="container">
@@ -77,9 +75,32 @@
       <canvas id="historyChart"></canvas>
     </div>
 
-    <div class="section">
-      <h2>📊 TradingView 专业K线图</h2>
-      <div id="tradingview_chart"></div>
+    <div class="section market-chart-section">
+      <div class="section-title-row">
+        <h2>实时分时盯盘图</h2>
+        <div id="intradayStatus" class="mini-status">等待分时数据...</div>
+      </div>
+      <canvas id="intradayChart"></canvas>
+    </div>
+
+    <div class="section volume-shape-section">
+      <div class="section-title-row">
+        <h2>量能形态分析</h2>
+        <div id="volumeShapeStatus" class="mini-status">等待量能形态...</div>
+      </div>
+
+      <div class="grid shape-grid">
+        <div class="item"><div class="label">量能形态</div><div id="volumeShapeType" class="value">--</div></div>
+        <div class="item"><div class="label">峰值时间</div><div id="volumePeakTime" class="value">--</div></div>
+        <div class="item"><div class="label">量能趋势</div><div id="volumeTrend" class="value">--</div></div>
+        <div class="item"><div class="label">价量配合</div><div id="priceVolumeMatch" class="value">--</div></div>
+      </div>
+
+      <canvas id="volumeShapeChart"></canvas>
+
+      <div id="volumeShapeSignals" class="signals">
+        <div class="signal neutral">等待分时成交量形态...</div>
+      </div>
     </div>
 
     <div class="section">
@@ -102,7 +123,7 @@
     </div>
 
     <div class="note">
-      盯盘行情来自 Yahoo Finance 轮询数据，可能存在延迟；逐笔成交、Level 2 盘口等富途牛牛级实时数据需要券商或交易所授权数据源。本工具仅供学习参考，不构成投资建议。
+      盯盘行情来自 Yahoo Finance 轮询数据，分时主图约每6秒刷新；逐笔成交、Level 2 盘口等富途牛牛级实时数据需要券商或交易所授权数据源。本工具仅供学习参考，不构成投资建议。
     </div>
 
     <a href="/">返回首页</a>

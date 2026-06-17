@@ -1,24 +1,8 @@
 const params = new URLSearchParams(window.location.search);
 const symbol = (params.get("symbol") || "TSLA").toUpperCase().replace(/[^A-Z0-9:.-]/g, "");
-const quoteSymbol = symbol.includes(":") ? symbol.split(":").pop() : symbol;
-const tradingViewSymbol = symbol.includes(":") ? symbol : "NASDAQ:" + symbol;
+const quoteSymbol = symbol;
 
 document.getElementById("title").innerText = symbol + " 实时量价分析 V10.1";
-
-new TradingView.widget({
-  container_id: "tradingview_chart",
-  symbol: tradingViewSymbol,
-  interval: "1",
-  timezone: "America/New_York",
-  theme: "dark",
-  style: "1",
-  locale: "zh_CN",
-  toolbar_bg: "#111827",
-  enable_publishing: false,
-  allow_symbol_change: true,
-  studies: ["Volume@tv-basicstudies"],
-  autosize: true
-});
 
 let latestPrice = null;
 let previousPrice = null;
@@ -29,6 +13,7 @@ let secondVolume = 0;
 let lastTradeVolume = 0;
 let previousMarketVolume = null;
 let pollingTimer = null;
+let intradayTimer = null;
 
 let buyPressure = 0;
 let sellPressure = 0;
@@ -58,82 +43,365 @@ const priceData = [];
 const historyLabels = [];
 const historyCloseData = [];
 const historyVolumeData = [];
+const intradayLabels = [];
+const intradayCloseData = [];
+const intradayVolumeData = [];
+let intradayPreviousClose = null;
+let volumeShapeAverage = null;
+let volumeShapePeakIndex = null;
 
-const priceChart = new Chart(document.getElementById("priceChart"), {
-  type: "line",
-  data: {
-    labels: priceLabels,
-    datasets: [{
-      label: "每秒最新成交价",
-      data: priceData,
-      borderWidth: 2,
-      tension: 0.25
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: {
-      legend: {
-        labels: { color: "#e5e7eb" }
-      }
-    },
-    scales: {
-      x: { ticks: { color: "#94a3b8" } },
-      y: { ticks: { color: "#94a3b8" } }
-    }
-  }
-});
+function prepareCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(320, rect.width || canvas.clientWidth || 640);
+  const height = Math.max(220, rect.height || canvas.clientHeight || 280);
 
-const historyChart = new Chart(document.getElementById("historyChart"), {
-  type: "bar",
-  data: {
-    labels: historyLabels,
-    datasets: [
-      {
-        type: "line",
-        label: "收盘价",
-        data: historyCloseData,
-        borderColor: "#38bdf8",
-        backgroundColor: "rgba(56, 189, 248, 0.12)",
-        borderWidth: 2,
-        pointRadius: 0,
-        tension: 0.3,
-        yAxisID: "price"
-      },
-      {
-        type: "bar",
-        label: "成交量",
-        data: historyVolumeData,
-        backgroundColor: "rgba(34, 197, 94, 0.28)",
-        borderWidth: 0,
-        yAxisID: "volume"
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+  return { ctx, width, height };
+}
+
+function drawNoData(ctx, width, height, text) {
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "14px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(text, width / 2, height / 2);
+}
+
+function getVolumePoints() {
+  const points = intradayVolumeData.map((volume, index) => ({
+    volume,
+    close: intradayCloseData[index],
+    label: intradayLabels[index],
+    index
+  })).filter(point => Number.isFinite(point.volume) && Number.isFinite(point.close) && point.volume > 0);
+
+  if (points.length >= 3) return points;
+
+  return intradayVolumeData.map((volume, index) => ({
+    volume: Number.isFinite(volume) ? volume : 0,
+    close: intradayCloseData[index],
+    label: intradayLabels[index],
+    index
+  })).filter(point => Number.isFinite(point.close));
+}
+
+function createPriceChart(canvas) {
+  return {
+    update() {
+      const { ctx, width, height } = prepareCanvas(canvas);
+
+      if (priceData.length < 2) {
+        drawNoData(ctx, width, height, "等待实时价格数据...");
+        return;
       }
-    ]
-  },
-  options: {
-    responsive: true,
-    plugins: {
-      legend: {
-        labels: { color: "#e5e7eb" }
+
+      const padding = 34;
+      const values = priceData.filter(v => Number.isFinite(v));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const span = max - min || 1;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.18)";
+      ctx.lineWidth = 1;
+
+      for (let i = 0; i < 4; i += 1) {
+        const y = padding + ((height - padding * 2) / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
       }
-    },
-    scales: {
-      price: {
-        position: "left",
-        ticks: { color: "#94a3b8" },
-        grid: { color: "rgba(148, 163, 184, 0.14)" }
-      },
-      volume: {
-        position: "right",
-        ticks: {
-          color: "#94a3b8",
-          callback: value => Math.round(value / 1000000) + "M"
-        },
-        grid: { drawOnChartArea: false }
-      },
-      x: { ticks: { color: "#94a3b8" } }
+
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+
+      priceData.forEach((value, index) => {
+        const x = padding + ((width - padding * 2) / Math.max(priceData.length - 1, 1)) * index;
+        const y = height - padding - ((value - min) / span) * (height - padding * 2);
+
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+
+      ctx.stroke();
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText(fmtPrice(max), 8, padding);
+      ctx.fillText(fmtPrice(min), 8, height - padding);
     }
-  }
+  };
+}
+
+function createHistoryChart(canvas) {
+  return {
+    update() {
+      const { ctx, width, height } = prepareCanvas(canvas);
+
+      if (historyCloseData.length < 2) {
+        drawNoData(ctx, width, height, "等待历史量价数据...");
+        return;
+      }
+
+      const padding = 38;
+      const prices = historyCloseData.filter(v => Number.isFinite(v));
+      const volumes = historyVolumeData.filter(v => Number.isFinite(v));
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      const priceSpan = maxPrice - minPrice || 1;
+      const maxVolume = Math.max(...volumes, 1);
+      const barWidth = Math.max(3, (width - padding * 2) / historyVolumeData.length * 0.55);
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i += 1) {
+        const y = padding + ((height - padding * 2) / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+      }
+
+      historyVolumeData.forEach((volume, index) => {
+        const x = padding + ((width - padding * 2) / Math.max(historyVolumeData.length - 1, 1)) * index;
+        const barHeight = (volume / maxVolume) * (height - padding * 2) * 0.36;
+        ctx.fillStyle = "rgba(34, 197, 94, 0.32)";
+        ctx.fillRect(x - barWidth / 2, height - padding - barHeight, barWidth, barHeight);
+      });
+
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+
+      historyCloseData.forEach((value, index) => {
+        const x = padding + ((width - padding * 2) / Math.max(historyCloseData.length - 1, 1)) * index;
+        const y = height - padding - ((value - minPrice) / priceSpan) * (height - padding * 2);
+
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+
+      ctx.stroke();
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("收盘 " + fmtPrice(maxPrice), 8, padding);
+      ctx.fillText("收盘 " + fmtPrice(minPrice), 8, height - padding);
+      ctx.textAlign = "right";
+      ctx.fillText("成交量", width - 8, padding);
+    }
+  };
+}
+
+function createIntradayChart(canvas) {
+  return {
+    update() {
+      const { ctx, width, height } = prepareCanvas(canvas);
+
+      if (intradayCloseData.length < 2) {
+        drawNoData(ctx, width, height, "等待实时分时数据...");
+        return;
+      }
+
+      const padding = 42;
+      const priceTop = padding;
+      const priceBottom = Math.round(height * 0.58);
+      const volumeTop = Math.round(height * 0.64);
+      const volumeBottom = height - padding;
+      const prices = intradayCloseData.filter(v => Number.isFinite(v));
+      const volumes = intradayVolumeData.filter(v => Number.isFinite(v));
+      const refs = intradayPreviousClose ? prices.concat([intradayPreviousClose]) : prices;
+      const minPrice = Math.min(...refs);
+      const maxPrice = Math.max(...refs);
+      const priceSpan = maxPrice - minPrice || 1;
+      const maxVolume = Math.max(...volumes, 1);
+      const barWidth = Math.max(3, (width - padding * 2) / intradayVolumeData.length * 0.72);
+      const priceHeight = priceBottom - priceTop;
+      const volumeHeight = volumeBottom - volumeTop;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i += 1) {
+        const y = priceTop + (priceHeight / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.28)";
+      ctx.beginPath();
+      ctx.moveTo(padding, volumeTop - 10);
+      ctx.lineTo(width - padding, volumeTop - 10);
+      ctx.stroke();
+
+      if (intradayPreviousClose) {
+        const y = priceBottom - ((intradayPreviousClose - minPrice) / priceSpan) * priceHeight;
+        ctx.setLineDash([6, 6]);
+        ctx.strokeStyle = "rgba(250, 204, 21, 0.7)";
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#facc15";
+        ctx.font = "12px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText("昨收 " + fmtPrice(intradayPreviousClose), padding + 6, y - 6);
+      }
+
+      intradayVolumeData.forEach((volume, index) => {
+        const x = padding + ((width - padding * 2) / Math.max(intradayVolumeData.length - 1, 1)) * index;
+        const barHeight = Math.max(volume > 0 ? 4 : 0, Math.pow(volume / maxVolume, 0.42) * volumeHeight);
+        const isUp = index === 0 || intradayCloseData[index] >= intradayCloseData[index - 1];
+        ctx.fillStyle = isUp ? "rgba(34, 197, 94, 0.55)" : "rgba(239, 68, 68, 0.55)";
+        ctx.fillRect(x - barWidth / 2, volumeBottom - barHeight, barWidth, barHeight);
+      });
+
+      const last = intradayCloseData[intradayCloseData.length - 1];
+      ctx.strokeStyle = intradayPreviousClose && last < intradayPreviousClose ? "#ef4444" : "#22c55e";
+      ctx.lineWidth = 2.6;
+      ctx.beginPath();
+
+      intradayCloseData.forEach((value, index) => {
+        const x = padding + ((width - padding * 2) / Math.max(intradayCloseData.length - 1, 1)) * index;
+        const y = priceBottom - ((value - minPrice) / priceSpan) * priceHeight;
+
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+
+      ctx.stroke();
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("高 " + fmtPrice(maxPrice), 8, padding);
+      ctx.fillText("低 " + fmtPrice(minPrice), 8, priceBottom);
+      ctx.fillText("成交量峰值 " + fmtNum(maxVolume), 8, volumeTop);
+      ctx.textAlign = "right";
+      ctx.fillText(intradayLabels[0] || "", width - padding, height - 10);
+      ctx.fillText(intradayLabels[intradayLabels.length - 1] || "", width - 8, padding);
+    }
+  };
+}
+
+function createVolumeShapeChart(canvas) {
+  return {
+    update() {
+      const { ctx, width, height } = prepareCanvas(canvas);
+
+      const points = getVolumePoints();
+
+      if (points.length < 3) {
+        drawNoData(ctx, width, height, "等待分时成交量形态...");
+        return;
+      }
+
+      const padding = 34;
+      const volumes = points.map(point => point.volume);
+      const maxVolume = Math.max(...volumes, 1);
+      const avg = volumeShapeAverage || (volumes.reduce((a, b) => a + b, 0) / volumes.length);
+      const chartHeight = height - padding * 2;
+      const barWidth = Math.max(4, (width - padding * 2) / points.length * 0.76);
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#020617";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "rgba(148, 163, 184, 0.16)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i += 1) {
+        const y = padding + (chartHeight / 3) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding, y);
+        ctx.lineTo(width - padding, y);
+        ctx.stroke();
+      }
+
+      const avgY = height - padding - Math.pow(avg / maxVolume, 0.42) * chartHeight;
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = "rgba(250, 204, 21, 0.72)";
+      ctx.beginPath();
+      ctx.moveTo(padding, avgY);
+      ctx.lineTo(width - padding, avgY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      points.forEach((point, pointIndex) => {
+        const x = padding + ((width - padding * 2) / Math.max(points.length - 1, 1)) * pointIndex;
+        const barHeight = Math.max(5, Math.pow(point.volume / maxVolume, 0.42) * chartHeight);
+        const previousPoint = points[Math.max(0, pointIndex - 1)];
+        const priceUp = pointIndex === 0 || point.close >= previousPoint.close;
+        const isPeak = point.index === volumeShapePeakIndex;
+
+        if (isPeak) {
+          ctx.fillStyle = "#facc15";
+        } else if (point.volume >= avg * 1.8) {
+          ctx.fillStyle = priceUp ? "rgba(34, 197, 94, 0.88)" : "rgba(239, 68, 68, 0.88)";
+        } else {
+          ctx.fillStyle = priceUp ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.45)";
+        }
+
+        ctx.fillRect(x - barWidth / 2, height - padding - barHeight, barWidth, barHeight);
+      });
+
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px Arial";
+      ctx.textAlign = "left";
+      ctx.fillText("均量 " + fmtNum(avg), padding, Math.max(14, avgY - 8));
+      ctx.fillText("峰值 " + fmtNum(maxVolume), 8, padding);
+      ctx.textAlign = "right";
+      const peakPoint = points.find(point => point.index === volumeShapePeakIndex);
+      if (peakPoint) {
+        ctx.fillStyle = "#facc15";
+        ctx.fillText("峰值 " + (peakPoint.label || ""), width - 8, padding);
+      }
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText("有效量柱 " + points.length + " 根", width - 8, padding + 18);
+      ctx.fillText(points[points.length - 1].label || "", width - 8, height - 10);
+    }
+  };
+}
+
+const priceChart = createPriceChart(document.getElementById("priceChart"));
+const historyChart = createHistoryChart(document.getElementById("historyChart"));
+const intradayChart = createIntradayChart(document.getElementById("intradayChart"));
+const volumeShapeChart = createVolumeShapeChart(document.getElementById("volumeShapeChart"));
+
+window.addEventListener("resize", () => {
+  priceChart.update();
+  historyChart.update();
+  intradayChart.update();
+  volumeShapeChart.update();
 });
 
 function fmtPrice(v) {
@@ -155,6 +423,12 @@ function fmtRatio(v) {
 function fmtNum(v) {
   if (!v && v !== 0) return "--";
   return Math.round(v).toLocaleString();
+}
+
+function average(values) {
+  const valid = values.filter(value => Number.isFinite(value));
+  if (!valid.length) return 0;
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
 }
 
 function getTimeText(t) {
@@ -399,6 +673,148 @@ function updateHistoryChart(history) {
   historyChart.update();
 }
 
+function updateIntradayChart(data) {
+  intradayLabels.length = 0;
+  intradayCloseData.length = 0;
+  intradayVolumeData.length = 0;
+  intradayPreviousClose = data.previousClose || null;
+
+  (data.points || []).forEach(point => {
+    const d = new Date(point.time);
+    intradayLabels.push(d.toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit"
+    }));
+    intradayCloseData.push(point.close);
+    intradayVolumeData.push(point.volume || 0);
+  });
+
+  document.getElementById("intradayStatus").innerText = `${data.symbol} · ${data.marketState} · ${data.source || "yahoo"} · ${intradayLabels.length}点`;
+  intradayChart.update();
+  updateVolumeShapeAnalysis();
+}
+
+function getVolumeShapeAnalysis() {
+  const points = getVolumePoints();
+  const volumes = points.map(point => point.volume);
+  const closes = points.map(point => point.close);
+
+  if (volumes.length < 8 || closes.length < 8) {
+    volumeShapeAverage = null;
+    volumeShapePeakIndex = null;
+
+    return {
+      type: "等待形成",
+      trend: "--",
+      match: "--",
+      peakTime: "--",
+      typeClass: "hold",
+      signals: [{ text: "等待更多分时成交量数据", type: "neutral" }]
+    };
+  }
+
+  const total = volumes.reduce((a, b) => a + b, 0);
+  const avg = total / volumes.length;
+  const peak = Math.max(...volumes);
+  const peakPointIndex = volumes.indexOf(peak);
+  const peakIndex = points[peakPointIndex].index;
+  const firstWindow = volumes.slice(0, Math.max(3, Math.floor(volumes.length * 0.25)));
+  const recentWindow = volumes.slice(-Math.max(3, Math.floor(volumes.length * 0.25)));
+  const firstAvg = average(firstWindow);
+  const recentAvg = average(recentWindow);
+  const volumeTrendRatio = firstAvg ? recentAvg / firstAvg : null;
+  const priceChange = closes[closes.length - 1] - closes[0];
+  const recentPriceChange = closes[closes.length - 1] - closes[Math.max(0, closes.length - recentWindow.length)];
+  const peakRatio = avg ? peak / avg : null;
+  const aboveAvgCount = volumes.filter(volume => volume > avg * 1.2).length;
+  const aboveAvgRatio = aboveAvgCount / volumes.length;
+  const peakTime = points[peakPointIndex].label || "--";
+  const signals = [];
+
+  let type = "均衡量能";
+  let trend = "量能平稳";
+  let match = "价量中性";
+  let typeClass = "hold";
+
+  if (peakRatio && peakRatio >= 4 && aboveAvgRatio < 0.18) {
+    type = "脉冲放量";
+    signals.push({ text: "出现单点或少数峰值量柱，适合结合价格位置判断是否是假突破", type: "neutral" });
+  } else if (aboveAvgRatio >= 0.35) {
+    type = "持续放量";
+    signals.push({ text: "多段成交量高于均量，盘中参与度明显提升", type: "good" });
+  } else if (aboveAvgRatio <= 0.12 && peakRatio && peakRatio < 2) {
+    type = "缩量窄幅";
+    signals.push({ text: "成交量柱整体偏低，趋势确认度不足", type: "neutral" });
+  }
+
+  if (volumeTrendRatio !== null && volumeTrendRatio >= 1.35) {
+    trend = "量能递增";
+    signals.push({ text: "后段量能大于前段，资金活跃度在增强", type: "good" });
+  } else if (volumeTrendRatio !== null && volumeTrendRatio <= 0.72) {
+    trend = "量能衰减";
+    signals.push({ text: "后段量能低于前段，追价力量在减弱", type: "bad" });
+  }
+
+  if (priceChange > 0 && volumeTrendRatio !== null && volumeTrendRatio >= 1.1) {
+    match = "价涨量增";
+    typeClass = "buy";
+    signals.push({ text: "价格上涨且量能配合，短线结构偏强", type: "good" });
+  } else if (priceChange > 0 && volumeTrendRatio !== null && volumeTrendRatio < 0.85) {
+    match = "价涨量缩";
+    typeClass = "hold";
+    signals.push({ text: "价格上涨但量能跟不上，注意背离", type: "neutral" });
+  } else if (priceChange < 0 && volumeTrendRatio !== null && volumeTrendRatio >= 1.1) {
+    match = "价跌量增";
+    typeClass = "risk";
+    signals.push({ text: "价格下跌且量能放大，卖压偏强", type: "bad" });
+  } else if (priceChange < 0 && volumeTrendRatio !== null && volumeTrendRatio < 0.85) {
+    match = "价跌量缩";
+    typeClass = "hold";
+    signals.push({ text: "价格回落但量能收缩，恐慌程度有限", type: "neutral" });
+  }
+
+  if (recentPriceChange > 0 && recentAvg > avg * 1.3) {
+    signals.push({ text: "最近一段出现带量上攻", type: "good" });
+  }
+
+  if (recentPriceChange < 0 && recentAvg > avg * 1.3) {
+    signals.push({ text: "最近一段出现带量回落", type: "bad" });
+  }
+
+  if (!signals.length) {
+    signals.push({ text: "量能形态暂时中性，等待新的量柱确认", type: "neutral" });
+  }
+
+  volumeShapeAverage = avg;
+  volumeShapePeakIndex = peakIndex;
+
+  return {
+    type,
+    trend,
+    match,
+    peakTime,
+    typeClass,
+    signals
+  };
+}
+
+function updateVolumeShapeAnalysis() {
+  const analysis = getVolumeShapeAnalysis();
+
+  document.getElementById("volumeShapeType").innerText = analysis.type;
+  document.getElementById("volumeShapeType").className = "value " + analysis.typeClass;
+  document.getElementById("volumePeakTime").innerText = analysis.peakTime;
+  document.getElementById("volumeTrend").innerText = analysis.trend;
+  document.getElementById("priceVolumeMatch").innerText = analysis.match;
+  document.getElementById("priceVolumeMatch").className = "value " + analysis.typeClass;
+  document.getElementById("volumeShapeStatus").innerText = volumeShapeAverage
+    ? `有效量柱均量 ${fmtNum(volumeShapeAverage)} · 峰值 ${analysis.peakTime}`
+    : "等待有效成交量柱...";
+  renderSignals("volumeShapeSignals", analysis.signals);
+  volumeShapeChart.update();
+}
+
 function updateHistoryAnalysis(analysis) {
   historicalAnalysis = analysis;
 
@@ -542,7 +958,7 @@ function handleQuote(quote) {
   }
 
   if (volume === 0) {
-    document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState}`;
+    document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState} · ${quote.source || "yahoo"}`;
     latestPrice = price;
     lastTradeTime = timestamp;
     document.getElementById("latestPrice").innerText = fmtPrice(latestPrice);
@@ -556,7 +972,7 @@ function handleQuote(quote) {
     t: timestamp
   });
 
-  document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState}`;
+  document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState} · ${quote.source || "yahoo"}`;
 }
 
 function renderEverySecond() {
@@ -604,11 +1020,28 @@ async function fetchAnalysis() {
   }
 }
 
+async function fetchIntraday() {
+  try {
+    const res = await fetch(`/api/intraday/${encodeURIComponent(quoteSymbol)}`);
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "分时数据请求失败");
+    }
+
+    updateIntradayChart(data);
+  } catch (err) {
+    document.getElementById("intradayStatus").innerText = `分时图更新失败：${err.message}`;
+  }
+}
+
 function startQuotePolling() {
   document.getElementById("status").innerText = "正在获取实时盯盘行情...";
+  fetchIntraday();
   fetchAnalysis();
   fetchQuote();
-  pollingTimer = setInterval(fetchQuote, 5000);
+  pollingTimer = setInterval(fetchQuote, 3000);
+  intradayTimer = setInterval(fetchIntraday, 6000);
   analysisTimer = setInterval(fetchAnalysis, 60000);
 }
 
