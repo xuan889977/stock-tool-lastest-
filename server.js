@@ -610,8 +610,45 @@ async function callGeminiAnalysis(context, fallback) {
       ],
       generationConfig: {
         responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            recommendation: { type: "STRING" },
+            decision: { type: "STRING" },
+            type: { type: "STRING", enum: ["buy", "hold", "risk"] },
+            confidence: { type: "STRING" },
+            score: { type: "NUMBER" },
+            risk: { type: "STRING" },
+            action: { type: "STRING" },
+            beginnerNote: { type: "STRING" },
+            summary: { type: "STRING" },
+            reasons: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  text: { type: "STRING" },
+                  type: { type: "STRING", enum: ["good", "neutral", "bad"] }
+                },
+                required: ["text", "type"]
+              }
+            }
+          },
+          required: [
+            "recommendation",
+            "decision",
+            "type",
+            "confidence",
+            "score",
+            "risk",
+            "action",
+            "beginnerNote",
+            "summary",
+            "reasons"
+          ]
+        },
         temperature: 0.35,
-        maxOutputTokens: 900
+        maxOutputTokens: 1400
       }
     })
   });
