@@ -581,6 +581,14 @@ function buildModelPrompt(context) {
   };
 }
 
+function compactText(value, maxLength = 420) {
+  return String(value || "")
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
 async function callGeminiAnalysis(context, fallback) {
   if (!process.env.GEMINI_API_KEY) return fallback;
 
@@ -600,7 +608,8 @@ async function callGeminiAnalysis(context, fallback) {
             {
               text: [
                 "你是谨慎的股票量价分析助手。",
-                "输出必须是JSON，不要输出Markdown。",
+                "请输出一段中文自然语言分析，不要输出JSON，不要输出Markdown。",
+                "必须包含：综合结论、为什么、主要风险、下一步盯盘动作。",
                 "分析只用于学习参考，不构成投资建议。",
                 JSON.stringify(prompt)
               ].join("\n")
@@ -609,46 +618,9 @@ async function callGeminiAnalysis(context, fallback) {
         }
       ],
       generationConfig: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: "OBJECT",
-          properties: {
-            recommendation: { type: "STRING" },
-            decision: { type: "STRING" },
-            type: { type: "STRING", enum: ["buy", "hold", "risk"] },
-            confidence: { type: "STRING" },
-            score: { type: "NUMBER" },
-            risk: { type: "STRING" },
-            action: { type: "STRING" },
-            beginnerNote: { type: "STRING" },
-            summary: { type: "STRING" },
-            reasons: {
-              type: "ARRAY",
-              items: {
-                type: "OBJECT",
-                properties: {
-                  text: { type: "STRING" },
-                  type: { type: "STRING", enum: ["good", "neutral", "bad"] }
-                },
-                required: ["text", "type"]
-              }
-            }
-          },
-          required: [
-            "recommendation",
-            "decision",
-            "type",
-            "confidence",
-            "score",
-            "risk",
-            "action",
-            "beginnerNote",
-            "summary",
-            "reasons"
-          ]
-        },
-        temperature: 0.35,
-        maxOutputTokens: 1400
+        responseMimeType: "text/plain",
+        temperature: 0.28,
+        maxOutputTokens: 700
       }
     })
   });
@@ -662,15 +634,23 @@ async function callGeminiAnalysis(context, fallback) {
     .flatMap(candidate => candidate.content && candidate.content.parts || [])
     .map(part => part.text || "")
     .join("");
-  const parsed = extractJsonObject(text);
+  const summary = compactText(text);
+
+  if (!summary) {
+    throw new Error("Gemini returned empty analysis");
+  }
 
   return {
     ...fallback,
-    ...parsed,
     source: "gemini",
     model: GEMINI_MODEL,
+    summary,
+    beginnerNote: summary,
     market: context.marketContext,
-    reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : fallback.reasons
+    reasons: [
+      { text: `Gemini综合分析：${summary}`, type: fallback.type === "risk" ? "bad" : fallback.type === "buy" ? "good" : "neutral" },
+      ...(fallback.reasons || [])
+    ].slice(0, 6)
   };
 }
 
