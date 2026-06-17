@@ -34,6 +34,8 @@ let recentPrices = [];
 let alertHistory = [];
 let historicalAnalysis = null;
 let analysisTimer = null;
+let aiAnalysisTimer = null;
+let lastAiRequestAt = 0;
 
 let pageHigh = null;
 let pageLow = null;
@@ -49,6 +51,8 @@ const intradayVolumeData = [];
 let intradayPreviousClose = null;
 let volumeShapeAverage = null;
 let volumeShapePeakIndex = null;
+let lastVolumeShapeAnalysis = null;
+let lastLocalAiAnalysis = null;
 
 function prepareCanvas(canvas) {
   const rect = canvas.getBoundingClientRect();
@@ -640,6 +644,234 @@ function renderSignals(targetId, signals) {
   }).join("");
 }
 
+function getBeginnerGuide(analysis) {
+  const match = analysis.match;
+  const trend = analysis.trend;
+  const type = analysis.type;
+
+  if (match === "价涨量增") {
+    return {
+      note: "价格上涨时成交量也增加，说明上涨有人参与，短线结构相对健康。",
+      decision: "偏推荐观察",
+      type: "buy",
+      action: "可以加入观察列表，等回踩不破VWAP或再次放量时再考虑。",
+      risk: "追高风险"
+    };
+  }
+
+  if (match === "价涨量缩") {
+    return {
+      note: "价格在涨，但成交量没有跟上，容易是假突破或上涨乏力。",
+      decision: "不建议追高",
+      type: "hold",
+      action: "先等下一波量柱确认，只有放量继续上攻才更可靠。",
+      risk: "上涨背离"
+    };
+  }
+
+  if (match === "价跌量增") {
+    return {
+      note: "价格下跌时成交量放大，通常代表卖压增强，新手要先控制风险。",
+      decision: "暂不推荐",
+      type: "risk",
+      action: "不要急着抄底，等卖压变弱、价格重新站回VWAP再看。",
+      risk: "放量下跌"
+    };
+  }
+
+  if (match === "价跌量缩") {
+    return {
+      note: "价格回落但成交量变小，说明恐慌不强，但也还没有明确转强。",
+      decision: "谨慎观察",
+      type: "hold",
+      action: "等待止跌和买盘恢复，不急着出手。",
+      risk: "趋势不明"
+    };
+  }
+
+  if (trend === "量能递增" || type === "持续放量") {
+    return {
+      note: "成交量正在变活跃，说明市场关注度上升，但还要看价格方向。",
+      decision: "重点观察",
+      type: "buy",
+      action: "观察价格是否能同步走强，避免只放量不涨。",
+      risk: "冲高回落"
+    };
+  }
+
+  if (trend === "量能衰减" || type === "缩量窄幅") {
+    return {
+      note: "成交量在下降，说明参与度变弱，短线爆发力不足。",
+      decision: "耐心等待",
+      type: "hold",
+      action: "等成交量重新放大后再判断方向。",
+      risk: "流动性不足"
+    };
+  }
+
+  return {
+    note: "当前量价结构偏中性，暂时没有明显的买入或卖出信号。",
+    decision: "中性观望",
+    type: "hold",
+    action: "继续盯盘，等价格和成交量给出更清楚的方向。",
+    risk: "信号不足"
+  };
+}
+
+function buildAiAnalysis(volumeAnalysis) {
+  const guide = getBeginnerGuide(volumeAnalysis);
+  const reasons = [];
+  let score = 50;
+
+  if (guide.type === "buy") score += 16;
+  if (guide.type === "risk") score -= 22;
+  if (volumeAnalysis.trend === "量能递增") score += 8;
+  if (volumeAnalysis.trend === "量能衰减") score -= 8;
+  if (volumeAnalysis.type === "持续放量") score += 8;
+  if (volumeAnalysis.type === "脉冲放量") score -= 4;
+
+  reasons.push({ text: `分时结论：${volumeAnalysis.match}，${guide.note}`, type: guide.type === "risk" ? "bad" : guide.type === "buy" ? "good" : "neutral" });
+
+  if (historicalAnalysis && historicalAnalysis.rating) {
+    const rating = historicalAnalysis.rating;
+    if (rating.type === "buy") score += 12;
+    if (rating.type === "risk") score -= 14;
+    reasons.push({ text: `历史量价：${rating.text}`, type: rating.type === "risk" ? "bad" : rating.type === "buy" ? "good" : "neutral" });
+  }
+
+  if (latestPrice && vwap) {
+    if (latestPrice > vwap) {
+      score += 8;
+      reasons.push({ text: "价格站在VWAP上方，盘中均价支撑较好", type: "good" });
+    } else {
+      score -= 8;
+      reasons.push({ text: "价格低于VWAP，盘中承压更明显", type: "bad" });
+    }
+  }
+
+  if (buyPressure > sellPressure * 1.3) {
+    score += 8;
+    reasons.push({ text: "买盘压力强于卖盘", type: "good" });
+  } else if (sellPressure > buyPressure * 1.3) {
+    score -= 10;
+    reasons.push({ text: "卖盘压力强于买盘", type: "bad" });
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  let recommendation = "中性观察";
+  let type = "hold";
+  let confidence = "中";
+
+  if (score >= 70) {
+    recommendation = "偏推荐盯盘";
+    type = "buy";
+    confidence = score >= 82 ? "高" : "中高";
+  } else if (score <= 38) {
+    recommendation = "暂不推荐";
+    type = "risk";
+    confidence = score <= 25 ? "高" : "中高";
+  }
+
+  if (reasons.length < 3) {
+    confidence = "低";
+    reasons.push({ text: "实时样本仍在积累，结论需要继续确认", type: "neutral" });
+  }
+
+  return {
+    guide,
+    recommendation,
+    type,
+    score,
+    confidence,
+    action: guide.action,
+    risk: guide.risk,
+    summary: `${recommendation}。当前核心依据是${volumeAnalysis.match}和${volumeAnalysis.trend}，新手不要只看涨跌，要同时看成交量是否配合。`,
+    reasons: reasons.slice(0, 5)
+  };
+}
+
+function renderAiResult(ai) {
+  const sourceText = ai.source === "openai"
+    ? `强模型分析 · ${ai.model || "OpenAI"}`
+    : `大盘增强分析 · ${ai.model || "规则模型"}`;
+
+  document.getElementById("beginnerNote").innerText = ai.beginnerNote || ai.guide?.note || "--";
+  document.getElementById("beginnerDecision").innerText = ai.decision || ai.guide?.decision || "--";
+  document.getElementById("beginnerDecision").className = "value " + (ai.type || ai.guide?.type || "hold");
+  document.getElementById("aiRecommendation").innerText = ai.recommendation || "中性观察";
+  document.getElementById("aiRecommendation").className = "ai-recommendation " + (ai.type || "hold");
+  document.getElementById("aiSummaryText").innerText = ai.summary || "等待AI综合分析...";
+  document.getElementById("aiConfidence").innerText = `${ai.confidence || "中"} · ${Math.round(ai.score || 50)}分`;
+  document.getElementById("aiRisk").innerText = ai.risk || "--";
+  document.getElementById("aiRisk").className = "value " + (ai.type === "risk" ? "risk" : "hold");
+  document.getElementById("aiActionPlan").innerText = ai.action || "继续观察量价与大盘是否共振。";
+  document.getElementById("aiStatus").innerText = sourceText;
+  renderSignals("aiReasonList", ai.reasons || [{ text: "等待AI分析...", type: "neutral" }]);
+}
+
+function getLiveAiMetrics() {
+  return {
+    latestPrice,
+    vwap,
+    buyPressure,
+    sellPressure,
+    minuteOpen,
+    minuteClose,
+    minuteVolume,
+    volumeBoost: getVolumeBoost(),
+    pageHigh,
+    pageLow
+  };
+}
+
+async function fetchModelAiAnalysis(force = false) {
+  if (!lastVolumeShapeAnalysis || lastVolumeShapeAnalysis.match === "--") return;
+
+  const now = Date.now();
+  if (!force && now - lastAiRequestAt < 45000) return;
+
+  lastAiRequestAt = now;
+  document.getElementById("aiStatus").innerText = "正在结合大盘和AI模型分析...";
+
+  try {
+    const res = await fetch(`/api/ai-analysis/${encodeURIComponent(quoteSymbol)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        volumeAnalysis: lastVolumeShapeAnalysis,
+        liveMetrics: getLiveAiMetrics(),
+        localRule: lastLocalAiAnalysis
+      })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "AI分析请求失败");
+    }
+
+    renderAiResult(data);
+  } catch (err) {
+    document.getElementById("aiStatus").innerText = `AI模型暂不可用，已使用本地分析：${err.message}`;
+  }
+}
+
+function updateAiPanel(volumeAnalysis) {
+  const ai = buildAiAnalysis(volumeAnalysis);
+  lastLocalAiAnalysis = ai;
+
+  renderAiResult({
+    ...ai,
+    beginnerNote: ai.guide.note,
+    decision: ai.guide.decision,
+    source: "local",
+    model: "本地实时规则"
+  });
+  fetchModelAiAnalysis();
+}
+
 function updateTape(quote) {
   document.getElementById("openPrice").innerText = fmtPrice(quote.open);
   document.getElementById("previousClose").innerText = fmtPrice(quote.previousClose);
@@ -801,6 +1033,7 @@ function getVolumeShapeAnalysis() {
 
 function updateVolumeShapeAnalysis() {
   const analysis = getVolumeShapeAnalysis();
+  lastVolumeShapeAnalysis = analysis;
 
   document.getElementById("volumeShapeType").innerText = analysis.type;
   document.getElementById("volumeShapeType").className = "value " + analysis.typeClass;
@@ -813,6 +1046,10 @@ function updateVolumeShapeAnalysis() {
     : "等待有效成交量柱...";
   renderSignals("volumeShapeSignals", analysis.signals);
   volumeShapeChart.update();
+
+  if (analysis.match !== "--") {
+    updateAiPanel(analysis);
+  }
 }
 
 function updateHistoryAnalysis(analysis) {
@@ -840,6 +1077,10 @@ function updateHistoryAnalysis(analysis) {
 
   if (analysis.quote) {
     updateTape(analysis.quote);
+  }
+
+  if (lastVolumeShapeAnalysis && lastVolumeShapeAnalysis.match !== "--") {
+    updateAiPanel(lastVolumeShapeAnalysis);
   }
 }
 
@@ -1043,6 +1284,7 @@ function startQuotePolling() {
   pollingTimer = setInterval(fetchQuote, 3000);
   intradayTimer = setInterval(fetchIntraday, 6000);
   analysisTimer = setInterval(fetchAnalysis, 60000);
+  aiAnalysisTimer = setInterval(() => fetchModelAiAnalysis(true), 60000);
 }
 
 startQuotePolling();

@@ -7,11 +7,16 @@ const yahooFinance = new YahooFinance({ suppressNotices: ["yahooSurvey", "ripHis
 const quoteCache = new Map();
 const analysisCache = new Map();
 const intradayCache = new Map();
+const aiCache = new Map();
 
 const QUOTE_TTL_MS = 1500;
 const ANALYSIS_TTL_MS = 60000;
 const INTRADAY_TTL_MS = 5000;
+const AI_TTL_MS = 60000;
 const REQUEST_TIMEOUT_MS = 6500;
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
+
+app.use(express.json({ limit: "1mb" }));
 
 function normalizeSymbol(value) {
   const cleaned = String(value || "")
@@ -382,6 +387,288 @@ function quoteResponse(quote) {
   };
 }
 
+async function getMarketContext() {
+  const symbols = [
+    { symbol: "SPY", name: "标普500 ETF" },
+    { symbol: "QQQ", name: "纳指100 ETF" },
+    { symbol: "IWM", name: "罗素2000 ETF" },
+    { symbol: "^VIX", name: "VIX恐慌指数" }
+  ];
+
+  const quotes = await Promise.all(symbols.map(async item => {
+    try {
+      const quote = await getQuote(item.symbol);
+      return {
+        symbol: item.symbol,
+        name: item.name,
+        price: quote.regularMarketPrice,
+        changePercent: quote.regularMarketChangePercent,
+        volume: quote.regularMarketVolume || 0,
+        marketState: quote.marketState || "UNKNOWN"
+      };
+    } catch (err) {
+      return {
+        symbol: item.symbol,
+        name: item.name,
+        error: err.message
+      };
+    }
+  }));
+
+  const spy = quotes.find(row => row.symbol === "SPY");
+  const qqq = quotes.find(row => row.symbol === "QQQ");
+  const iwm = quotes.find(row => row.symbol === "IWM");
+  const vix = quotes.find(row => row.symbol === "^VIX");
+  const riskOnCount = [spy, qqq, iwm].filter(row => toNumber(row && row.changePercent) > 0.2).length;
+  const riskOffCount = [spy, qqq, iwm].filter(row => toNumber(row && row.changePercent) < -0.2).length;
+  const vixChange = toNumber(vix && vix.changePercent);
+
+  let regime = "震荡";
+  let type = "neutral";
+  let comment = "大盘方向暂不明确，个股信号需要更多确认。";
+
+  if (riskOnCount >= 2 && (!vixChange || vixChange < 3)) {
+    regime = "风险偏好较强";
+    type = "good";
+    comment = "主要指数偏强，个股多头信号更容易延续。";
+  } else if (riskOffCount >= 2 || (vixChange && vixChange > 5)) {
+    regime = "风险偏好较弱";
+    type = "bad";
+    comment = "主要指数走弱或波动率抬升，个股信号需要降低仓位和预期。";
+  }
+
+  return {
+    regime,
+    type,
+    comment,
+    quotes,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function buildRuleAiAnalysis(context) {
+  const volume = context.volumeAnalysis || {};
+  const history = context.historyAnalysis || {};
+  const live = context.liveMetrics || {};
+  const market = context.marketContext || {};
+  const reasons = [];
+  let score = 50;
+
+  if (volume.match === "价涨量增") {
+    score += 18;
+    reasons.push({ text: "个股分时价涨量增，上涨有成交量配合", type: "good" });
+  } else if (volume.match === "价涨量缩") {
+    score -= 6;
+    reasons.push({ text: "个股价涨量缩，短线不适合追高", type: "neutral" });
+  } else if (volume.match === "价跌量增") {
+    score -= 24;
+    reasons.push({ text: "个股价跌量增，卖压偏强", type: "bad" });
+  } else if (volume.match === "价跌量缩") {
+    score -= 2;
+    reasons.push({ text: "个股价跌量缩，恐慌不强但还没转强", type: "neutral" });
+  }
+
+  if (volume.trend === "量能递增") score += 8;
+  if (volume.trend === "量能衰减") score -= 8;
+
+  if (history.rating && history.rating.type === "buy") {
+    score += 12;
+    reasons.push({ text: `历史量价偏强：${history.rating.text}`, type: "good" });
+  } else if (history.rating && history.rating.type === "risk") {
+    score -= 14;
+    reasons.push({ text: `历史量价有风险：${history.rating.text}`, type: "bad" });
+  }
+
+  if (live.vwap && live.latestPrice) {
+    if (live.latestPrice > live.vwap) {
+      score += 8;
+      reasons.push({ text: "现价站上VWAP，盘中均价支撑较好", type: "good" });
+    } else {
+      score -= 8;
+      reasons.push({ text: "现价低于VWAP，短线承压", type: "bad" });
+    }
+  }
+
+  if (market.type === "good") {
+    score += 10;
+    reasons.push({ text: `大盘环境：${market.regime}，有利于个股信号延续`, type: "good" });
+  } else if (market.type === "bad") {
+    score -= 14;
+    reasons.push({ text: `大盘环境：${market.regime}，需要降低追涨意愿`, type: "bad" });
+  } else if (market.regime) {
+    reasons.push({ text: `大盘环境：${market.regime}，先按个股结构处理`, type: "neutral" });
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  let recommendation = "中性观察";
+  let decision = "谨慎观察";
+  let type = "hold";
+  let confidence = "中";
+  let action = "等待价格、成交量和大盘方向进一步同步。";
+  let risk = market.type === "bad" ? "大盘拖累" : "信号不足";
+
+  if (score >= 72) {
+    recommendation = "偏推荐盯盘";
+    decision = "可重点观察";
+    type = "buy";
+    confidence = score >= 84 ? "高" : "中高";
+    action = "优先等回踩VWAP不破或再次放量上攻，再考虑分批介入。";
+    risk = "追高回落";
+  } else if (score <= 38) {
+    recommendation = "暂不推荐";
+    decision = "先不要追";
+    type = "risk";
+    confidence = score <= 26 ? "高" : "中高";
+    action = "先看卖压是否减弱，等重新站回VWAP并放量确认。";
+    risk = market.type === "bad" ? "大盘与个股共振转弱" : "卖压偏强";
+  }
+
+  if (!reasons.length) {
+    reasons.push({ text: "样本不足，等待更多实时量价数据", type: "neutral" });
+    confidence = "低";
+  }
+
+  return {
+    source: "rule-market",
+    model: "大盘增强规则模型",
+    recommendation,
+    decision,
+    type,
+    confidence,
+    score,
+    risk,
+    action,
+    beginnerNote: `${volume.match || "量价结构"}结合${market.regime || "大盘环境"}来看，当前更适合先确认方向，不要只看单根价格涨跌。`,
+    summary: `${recommendation}。综合个股分时量价、历史量价和大盘环境，当前评分为${Math.round(score)}分。`,
+    reasons: reasons.slice(0, 6),
+    market
+  };
+}
+
+function extractJsonObject(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+    throw err;
+  }
+}
+
+async function callOpenAiAnalysis(context, fallback) {
+  if (!process.env.OPENAI_API_KEY) return fallback;
+
+  const prompt = {
+    task: "请作为股票量价分析助手，结合个股实时分时、历史量价、大盘环境，给新手可以理解的短线盯盘分析。不要承诺收益，不要给绝对买卖指令。",
+    outputSchema: {
+      recommendation: "偏推荐盯盘 / 中性观察 / 暂不推荐",
+      decision: "给新手看的简短结论",
+      type: "buy / hold / risk",
+      confidence: "低 / 中 / 中高 / 高",
+      score: "0-100",
+      risk: "主要风险",
+      action: "下一步盯盘动作",
+      beginnerNote: "用人话解释量价含义",
+      summary: "一句综合分析",
+      reasons: [{ text: "原因", type: "good / neutral / bad" }]
+    },
+    data: context
+  };
+
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    timeout: REQUEST_TIMEOUT_MS + 8000,
+    headers: {
+      "authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      input: [
+        {
+          role: "system",
+          content: "你是谨慎的股票量价分析助手。输出必须是JSON，不要输出Markdown。分析只用于学习参考，不构成投资建议。"
+        },
+        {
+          role: "user",
+          content: JSON.stringify(prompt)
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "stock_ai_analysis",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              recommendation: { type: "string" },
+              decision: { type: "string" },
+              type: { type: "string", enum: ["buy", "hold", "risk"] },
+              confidence: { type: "string" },
+              score: { type: "number" },
+              risk: { type: "string" },
+              action: { type: "string" },
+              beginnerNote: { type: "string" },
+              summary: { type: "string" },
+              reasons: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    text: { type: "string" },
+                    type: { type: "string", enum: ["good", "neutral", "bad"] }
+                  },
+                  required: ["text", "type"]
+                }
+              }
+            },
+            required: [
+              "recommendation",
+              "decision",
+              "type",
+              "confidence",
+              "score",
+              "risk",
+              "action",
+              "beginnerNote",
+              "summary",
+              "reasons"
+            ]
+          }
+        }
+      }
+    })
+  });
+
+  if (!res.ok) {
+    throw new Error(`OpenAI HTTP ${res.status}`);
+  }
+
+  const body = await res.json();
+  const text = body.output_text || (body.output || [])
+    .flatMap(item => item.content || [])
+    .map(item => item.text || "")
+    .join("");
+  const parsed = extractJsonObject(text);
+
+  return {
+    ...fallback,
+    ...parsed,
+    source: "openai",
+    model: OPENAI_MODEL,
+    market: context.marketContext,
+    reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : fallback.reasons
+  };
+}
+
 function buildVolumePriceAnalysis(symbol, quote, historyRows) {
   const history = compactHistory(historyRows).slice(-30);
   const closes = history.map(row => row.close);
@@ -557,6 +844,72 @@ app.get("/api/intraday/:symbol", async (req, res) => {
   } catch (err) {
     res.status(500).json({
       error: "获取实时分时数据失败",
+      detail: err.message
+    });
+  }
+});
+
+app.post("/api/ai-analysis/:symbol", async (req, res) => {
+  const symbol = normalizeSymbol(req.params.symbol);
+
+  if (!symbol) {
+    return res.status(400).json({ error: "股票代码不能为空" });
+  }
+
+  try {
+    const cacheKey = `${symbol}:${JSON.stringify(req.body && req.body.volumeAnalysis || {})}`;
+    const cached = getCached(aiCache, cacheKey, AI_TTL_MS);
+
+    if (cached) {
+      return res.json(cached);
+    }
+
+    const [quote, historyRows, marketContext] = await Promise.all([
+      getQuote(symbol),
+      getHistory(symbol),
+      getMarketContext()
+    ]);
+    const historyAnalysis = buildVolumePriceAnalysis(symbol, quote, historyRows);
+    const intraday = await getIntraday(symbol);
+    const context = {
+      symbol,
+      quote: quoteResponse(quote),
+      historyAnalysis: {
+        metrics: historyAnalysis.metrics,
+        rating: historyAnalysis.rating,
+        signals: historyAnalysis.signals
+      },
+      intradaySummary: {
+        points: intraday.points.length,
+        firstPoint: intraday.points[0],
+        lastPoint: intraday.points[intraday.points.length - 1],
+        recentPoints: intraday.points.slice(-20)
+      },
+      volumeAnalysis: req.body && req.body.volumeAnalysis || {},
+      liveMetrics: req.body && req.body.liveMetrics || {},
+      localRule: req.body && req.body.localRule || {},
+      marketContext
+    };
+    const fallback = buildRuleAiAnalysis(context);
+
+    let ai = fallback;
+
+    try {
+      ai = await callOpenAiAnalysis(context, fallback);
+    } catch (modelErr) {
+      ai = {
+        ...fallback,
+        source: "rule-market",
+        model: "大盘增强规则模型",
+        modelError: modelErr.message
+      };
+    }
+
+    setCached(aiCache, cacheKey, ai);
+    res.json(ai);
+  } catch (err) {
+    res.status(500).json({
+      error: "获取AI综合分析失败",
       detail: err.message
     });
   }
