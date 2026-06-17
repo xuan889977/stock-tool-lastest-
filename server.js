@@ -15,6 +15,8 @@ const INTRADAY_TTL_MS = 5000;
 const AI_TTL_MS = 60000;
 const REQUEST_TIMEOUT_MS = 6500;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.2";
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const AI_PROVIDER = (process.env.AI_PROVIDER || "auto").toLowerCase();
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -560,10 +562,8 @@ function extractJsonObject(text) {
   }
 }
 
-async function callOpenAiAnalysis(context, fallback) {
-  if (!process.env.OPENAI_API_KEY) return fallback;
-
-  const prompt = {
+function buildModelPrompt(context) {
+  return {
     task: "请作为股票量价分析助手，结合个股实时分时、历史量价、大盘环境，给新手可以理解的短线盯盘分析。不要承诺收益，不要给绝对买卖指令。",
     outputSchema: {
       recommendation: "偏推荐盯盘 / 中性观察 / 暂不推荐",
@@ -579,6 +579,68 @@ async function callOpenAiAnalysis(context, fallback) {
     },
     data: context
   };
+}
+
+async function callGeminiAnalysis(context, fallback) {
+  if (!process.env.GEMINI_API_KEY) return fallback;
+
+  const prompt = buildModelPrompt(context);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    timeout: REQUEST_TIMEOUT_MS + 8000,
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: [
+                "你是谨慎的股票量价分析助手。",
+                "输出必须是JSON，不要输出Markdown。",
+                "分析只用于学习参考，不构成投资建议。",
+                JSON.stringify(prompt)
+              ].join("\n")
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.35,
+        maxOutputTokens: 900
+      }
+    })
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gemini HTTP ${res.status}`);
+  }
+
+  const body = await res.json();
+  const text = (body.candidates || [])
+    .flatMap(candidate => candidate.content && candidate.content.parts || [])
+    .map(part => part.text || "")
+    .join("");
+  const parsed = extractJsonObject(text);
+
+  return {
+    ...fallback,
+    ...parsed,
+    source: "gemini",
+    model: GEMINI_MODEL,
+    market: context.marketContext,
+    reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : fallback.reasons
+  };
+}
+
+async function callOpenAiAnalysis(context, fallback) {
+  if (!process.env.OPENAI_API_KEY) return fallback;
+
+  const prompt = buildModelPrompt(context);
 
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -667,6 +729,26 @@ async function callOpenAiAnalysis(context, fallback) {
     market: context.marketContext,
     reasons: Array.isArray(parsed.reasons) ? parsed.reasons.slice(0, 6) : fallback.reasons
   };
+}
+
+async function callModelAiAnalysis(context, fallback) {
+  if (AI_PROVIDER === "gemini") {
+    return callGeminiAnalysis(context, fallback);
+  }
+
+  if (AI_PROVIDER === "openai") {
+    return callOpenAiAnalysis(context, fallback);
+  }
+
+  if (process.env.GEMINI_API_KEY) {
+    return callGeminiAnalysis(context, fallback);
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    return callOpenAiAnalysis(context, fallback);
+  }
+
+  return fallback;
 }
 
 function buildVolumePriceAnalysis(symbol, quote, historyRows) {
@@ -895,7 +977,7 @@ app.post("/api/ai-analysis/:symbol", async (req, res) => {
     let ai = fallback;
 
     try {
-      ai = await callOpenAiAnalysis(context, fallback);
+      ai = await callModelAiAnalysis(context, fallback);
     } catch (modelErr) {
       ai = {
         ...fallback,
