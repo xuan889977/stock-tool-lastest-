@@ -186,6 +186,39 @@ h1 {
   gap: 14px;
 }
 
+.tape-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 20px;
+}
+
+.tape-item {
+  background: #020617;
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  padding: 12px;
+  min-width: 0;
+}
+
+.tape-item span {
+  display: block;
+  color: #94a3b8;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.tape-item strong {
+  display: block;
+  color: #f8fafc;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.history-grid {
+  margin-top: 16px;
+}
+
 .item {
   background: #1f2937;
   padding: 15px;
@@ -362,6 +395,10 @@ a {
     grid-template-columns: 1fr 1fr;
   }
 
+  .tape-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
   .price {
     font-size: 38px;
   }
@@ -396,5 +433,9 @@ a {
 
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .tape-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }

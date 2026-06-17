@@ -1,7 +1,6 @@
-const API_KEY = "d8oo1v1r01qn89hsjcr0d8oo1v1r01qn89hsjcrg";
-
 const params = new URLSearchParams(window.location.search);
-const symbol = (params.get("symbol") || "TSLA").toUpperCase();
+const symbol = (params.get("symbol") || "TSLA").toUpperCase().replace(/[^A-Z0-9:.-]/g, "");
+const quoteSymbol = symbol.includes(":") ? symbol.split(":").pop() : symbol;
 const tradingViewSymbol = symbol.includes(":") ? symbol : "NASDAQ:" + symbol;
 
 document.getElementById("title").innerText = symbol + " 实时量价分析 V10.1";
@@ -21,8 +20,6 @@ new TradingView.widget({
   autosize: true
 });
 
-let socket = null;
-
 let latestPrice = null;
 let previousPrice = null;
 let lastTradeTime = null;
@@ -30,6 +27,8 @@ let lastTradeTime = null;
 let totalVolume = 0;
 let secondVolume = 0;
 let lastTradeVolume = 0;
+let previousMarketVolume = null;
+let pollingTimer = null;
 
 let buyPressure = 0;
 let sellPressure = 0;
@@ -48,12 +47,17 @@ let minuteVolume = 0;
 let finishedMinuteVolumes = [];
 let recentPrices = [];
 let alertHistory = [];
+let historicalAnalysis = null;
+let analysisTimer = null;
 
 let pageHigh = null;
 let pageLow = null;
 
 const priceLabels = [];
 const priceData = [];
+const historyLabels = [];
+const historyCloseData = [];
+const historyVolumeData = [];
 
 const priceChart = new Chart(document.getElementById("priceChart"), {
   type: "line",
@@ -80,9 +84,72 @@ const priceChart = new Chart(document.getElementById("priceChart"), {
   }
 });
 
+const historyChart = new Chart(document.getElementById("historyChart"), {
+  type: "bar",
+  data: {
+    labels: historyLabels,
+    datasets: [
+      {
+        type: "line",
+        label: "收盘价",
+        data: historyCloseData,
+        borderColor: "#38bdf8",
+        backgroundColor: "rgba(56, 189, 248, 0.12)",
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.3,
+        yAxisID: "price"
+      },
+      {
+        type: "bar",
+        label: "成交量",
+        data: historyVolumeData,
+        backgroundColor: "rgba(34, 197, 94, 0.28)",
+        borderWidth: 0,
+        yAxisID: "volume"
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    plugins: {
+      legend: {
+        labels: { color: "#e5e7eb" }
+      }
+    },
+    scales: {
+      price: {
+        position: "left",
+        ticks: { color: "#94a3b8" },
+        grid: { color: "rgba(148, 163, 184, 0.14)" }
+      },
+      volume: {
+        position: "right",
+        ticks: {
+          color: "#94a3b8",
+          callback: value => Math.round(value / 1000000) + "M"
+        },
+        grid: { drawOnChartArea: false }
+      },
+      x: { ticks: { color: "#94a3b8" } }
+    }
+  }
+});
+
 function fmtPrice(v) {
   if (v === null || v === undefined) return "--";
   return "$" + Number(v).toFixed(2);
+}
+
+function fmtPercent(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "--";
+  const n = Number(v);
+  return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+}
+
+function fmtRatio(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "--";
+  return Number(v).toFixed(2) + "x";
 }
 
 function fmtNum(v) {
@@ -293,6 +360,73 @@ function updateSignals() {
   }).join("");
 }
 
+function renderSignals(targetId, signals) {
+  document.getElementById(targetId).innerHTML = signals.map(s => {
+    return `<div class="signal ${s.type}">${s.text}</div>`;
+  }).join("");
+}
+
+function updateTape(quote) {
+  document.getElementById("openPrice").innerText = fmtPrice(quote.open);
+  document.getElementById("previousClose").innerText = fmtPrice(quote.previousClose);
+  document.getElementById("dayHigh").innerText = fmtPrice(quote.dayHigh);
+  document.getElementById("dayLow").innerText = fmtPrice(quote.dayLow);
+  document.getElementById("bidPrice").innerText = quote.bid ? `${fmtPrice(quote.bid)} x ${fmtNum(quote.bidSize)}` : "--";
+  document.getElementById("askPrice").innerText = quote.ask ? `${fmtPrice(quote.ask)} x ${fmtNum(quote.askSize)}` : "--";
+  document.getElementById("changePercent").innerText = fmtPercent(quote.changePercent);
+  document.getElementById("changePercent").className = quote.changePercent > 0 ? "buy" : quote.changePercent < 0 ? "risk" : "hold";
+  document.getElementById("marketState").innerText = quote.marketState || "--";
+}
+
+function updateLiveHistoryRatio(marketVolume) {
+  if (historicalAnalysis && historicalAnalysis.metrics && historicalAnalysis.metrics.avgVolume20) {
+    document.getElementById("volumeRatio20").innerText = fmtRatio(marketVolume / historicalAnalysis.metrics.avgVolume20);
+  }
+}
+
+function updateHistoryChart(history) {
+  historyLabels.length = 0;
+  historyCloseData.length = 0;
+  historyVolumeData.length = 0;
+
+  history.forEach(row => {
+    const d = new Date(row.date);
+    historyLabels.push(`${d.getMonth() + 1}/${d.getDate()}`);
+    historyCloseData.push(row.close);
+    historyVolumeData.push(row.volume);
+  });
+
+  historyChart.update();
+}
+
+function updateHistoryAnalysis(analysis) {
+  historicalAnalysis = analysis;
+
+  const metrics = analysis.metrics || {};
+  const rating = analysis.rating || { text: "持有观察", type: "hold" };
+
+  document.getElementById("historyRating").innerText = rating.text;
+  document.getElementById("historyRating").className = "advice " + rating.type;
+  document.getElementById("avgVolume5").innerText = fmtNum(metrics.avgVolume5);
+  document.getElementById("avgVolume20").innerText = fmtNum(metrics.avgVolume20);
+  document.getElementById("volumeRatio20").innerText = fmtRatio(metrics.volumeRatio20);
+  document.getElementById("high20").innerText = fmtPrice(metrics.high20);
+  document.getElementById("low20").innerText = fmtPrice(metrics.low20);
+  document.getElementById("change5Day").innerText = fmtPercent(metrics.change5Day);
+  document.getElementById("change20Day").innerText = fmtPercent(metrics.change20Day);
+  document.getElementById("latestClose").innerText = fmtPrice(metrics.latestClose);
+
+  renderSignals("historySignals", analysis.signals || [{ text: "历史量价中性", type: "neutral" }]);
+
+  if (analysis.history) {
+    updateHistoryChart(analysis.history);
+  }
+
+  if (analysis.quote) {
+    updateTape(analysis.quote);
+  }
+}
+
 function checkEventAlerts() {
   const boost = getVolumeBoost();
 
@@ -383,6 +517,48 @@ function handleTrade(trade) {
   updateMainSignal();
 }
 
+function handleQuote(quote) {
+  const price = Number(quote.price);
+  const marketVolume = Number(quote.volume || 0);
+  const timestamp = new Date(quote.time || Date.now()).getTime();
+
+  if (!price || !timestamp) return;
+
+  updateTape(quote);
+  updateLiveHistoryRatio(marketVolume);
+
+  let volume = 0;
+
+  if (previousMarketVolume === null) {
+    volume = marketVolume || 1;
+  } else {
+    volume = Math.max(marketVolume - previousMarketVolume, 0);
+  }
+
+  previousMarketVolume = marketVolume;
+
+  if (volume === 0 && latestPrice !== null && price !== latestPrice) {
+    volume = 1;
+  }
+
+  if (volume === 0) {
+    document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState}`;
+    latestPrice = price;
+    lastTradeTime = timestamp;
+    document.getElementById("latestPrice").innerText = fmtPrice(latestPrice);
+    document.getElementById("lastTradeTime").innerText = getTimeText(lastTradeTime);
+    return;
+  }
+
+  handleTrade({
+    p: price,
+    v: volume,
+    t: timestamp
+  });
+
+  document.getElementById("status").innerText = `${quote.symbol} 行情已更新 · ${quote.marketState}`;
+}
+
 function renderEverySecond() {
   if (latestPrice !== null) {
     document.getElementById("price").innerText = fmtPrice(latestPrice);
@@ -395,36 +571,46 @@ function renderEverySecond() {
   secondVolume = 0;
 }
 
-function connectWebSocket() {
-  document.getElementById("status").innerText = "正在连接实时行情...";
+async function fetchQuote() {
+  try {
+    const res = await fetch(`/api/quote/${encodeURIComponent(quoteSymbol)}`);
+    const data = await res.json();
 
-  socket = new WebSocket("wss://ws.finnhub.io?token=" + API_KEY);
+    if (!res.ok) {
+      throw new Error(data.error || "行情请求失败");
+    }
 
-  socket.addEventListener("open", () => {
-    document.getElementById("status").innerText = "实时行情已连接";
-    socket.send(JSON.stringify({
-      type: "subscribe",
-      symbol
-    }));
-  });
-
-  socket.addEventListener("message", event => {
-    const message = JSON.parse(event.data);
-
-    if (message.type !== "trade") return;
-
-    message.data.forEach(trade => handleTrade(trade));
-  });
-
-  socket.addEventListener("error", () => {
-    document.getElementById("status").innerText = "实时连接出错";
-  });
-
-  socket.addEventListener("close", () => {
-    document.getElementById("status").innerText = "实时连接断开，5秒后重连";
-    setTimeout(connectWebSocket, 5000);
-  });
+    handleQuote(data);
+  } catch (err) {
+    document.getElementById("status").innerText = "行情更新失败，5秒后重试";
+    addAlert(`${quoteSymbol} 行情更新失败：${err.message}`, "bad");
+  }
 }
 
-connectWebSocket();
+async function fetchAnalysis() {
+  try {
+    const res = await fetch(`/api/analysis/${encodeURIComponent(quoteSymbol)}`);
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.error || "历史量价请求失败");
+    }
+
+    updateHistoryAnalysis(data);
+  } catch (err) {
+    document.getElementById("historyRating").innerText = "历史量价加载失败";
+    document.getElementById("historyRating").className = "advice risk";
+    renderSignals("historySignals", [{ text: err.message, type: "bad" }]);
+  }
+}
+
+function startQuotePolling() {
+  document.getElementById("status").innerText = "正在获取实时盯盘行情...";
+  fetchAnalysis();
+  fetchQuote();
+  pollingTimer = setInterval(fetchQuote, 5000);
+  analysisTimer = setInterval(fetchAnalysis, 60000);
+}
+
+startQuotePolling();
 setInterval(renderEverySecond, 1000);

@@ -21,6 +21,17 @@
     <div class="card">
       <div id="price" class="price">--</div>
 
+      <div class="tape-grid">
+        <div class="tape-item"><span>今开</span><strong id="openPrice">--</strong></div>
+        <div class="tape-item"><span>昨收</span><strong id="previousClose">--</strong></div>
+        <div class="tape-item"><span>日高</span><strong id="dayHigh">--</strong></div>
+        <div class="tape-item"><span>日低</span><strong id="dayLow">--</strong></div>
+        <div class="tape-item"><span>买一</span><strong id="bidPrice">--</strong></div>
+        <div class="tape-item"><span>卖一</span><strong id="askPrice">--</strong></div>
+        <div class="tape-item"><span>涨跌幅</span><strong id="changePercent">--</strong></div>
+        <div class="tape-item"><span>市场状态</span><strong id="marketState">--</strong></div>
+      </div>
+
       <div class="grid">
         <div class="item"><div class="label">最新成交价</div><div id="latestPrice" class="value">--</div></div>
         <div class="item"><div class="label">最后成交时间</div><div id="lastTradeTime" class="value">--</div></div>
@@ -39,6 +50,31 @@
       </div>
 
       <div id="mainSignal" class="advice hold">等待数据...</div>
+    </div>
+
+    <div class="section">
+      <h2>历史量价评估</h2>
+      <div id="historyRating" class="advice hold">正在加载历史量价...</div>
+
+      <div class="grid history-grid">
+        <div class="item"><div class="label">5日均量</div><div id="avgVolume5" class="value">--</div></div>
+        <div class="item"><div class="label">20日均量</div><div id="avgVolume20" class="value">--</div></div>
+        <div class="item"><div class="label">今日量 / 20日均量</div><div id="volumeRatio20" class="value">--</div></div>
+        <div class="item"><div class="label">20日高点</div><div id="high20" class="value">--</div></div>
+        <div class="item"><div class="label">20日低点</div><div id="low20" class="value">--</div></div>
+        <div class="item"><div class="label">5日涨跌幅</div><div id="change5Day" class="value">--</div></div>
+        <div class="item"><div class="label">20日涨跌幅</div><div id="change20Day" class="value">--</div></div>
+        <div class="item"><div class="label">历史收盘参考</div><div id="latestClose" class="value">--</div></div>
+      </div>
+
+      <div id="historySignals" class="signals">
+        <div class="signal neutral">等待历史量价数据...</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>近30日价格与成交量</h2>
+      <canvas id="historyChart"></canvas>
     </div>
 
     <div class="section">
@@ -66,7 +102,7 @@
     </div>
 
     <div class="note">
-      页面成交量为本页面接收到的推送量，不等于完整全市场成交量。本工具仅供学习参考，不构成投资建议。
+      盯盘行情来自 Yahoo Finance 轮询数据，可能存在延迟；逐笔成交、Level 2 盘口等富途牛牛级实时数据需要券商或交易所授权数据源。本工具仅供学习参考，不构成投资建议。
     </div>
 
     <a href="/">返回首页</a>
