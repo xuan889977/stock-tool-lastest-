@@ -56,10 +56,14 @@ function normalizeSymbol(value) {
 function getCached(cache, key, ttl) {
   const cached = cache.get(key);
   if (!cached) return null;
-  if (Date.now() - cached.time > ttl) {
-    cache.delete(key);
-    return null;
-  }
+  if (Date.now() - cached.time > ttl) return null;
+  return cached.data;
+}
+
+function getStaleCached(cache, key, maxAge) {
+  const cached = cache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.time > maxAge) return null;
   return cached.data;
 }
 
@@ -271,6 +275,7 @@ function rowsFromChartQuotes(rows) {
 async function getQuote(symbol) {
   const cached = getCached(quoteCache, symbol, QUOTE_TTL_MS);
   if (cached) return cached;
+  const stale = getStaleCached(quoteCache, symbol, 30 * 60 * 1000);
 
   try {
     const chart = await fetchYahooChart(symbol, {
@@ -282,15 +287,27 @@ async function getQuote(symbol) {
     setCached(quoteCache, symbol, quote);
     return quote;
   } catch (chartErr) {
-    const quote = await yahooFinance.quote(symbol);
+    try {
+      const quote = await yahooFinance.quote(symbol);
 
-    if (!quote || !quote.regularMarketPrice) {
-      throw chartErr;
+      if (!quote || !quote.regularMarketPrice) {
+        throw chartErr;
+      }
+
+      quote.source = "yahoo-finance2";
+      setCached(quoteCache, symbol, quote);
+      return quote;
+    } catch (fallbackErr) {
+      if (stale) {
+        return {
+          ...stale,
+          stale: true,
+          source: `${stale.source || "cache"}-stale`
+        };
+      }
+
+      throw fallbackErr;
     }
-
-    quote.source = "yahoo-finance2";
-    setCached(quoteCache, symbol, quote);
-    return quote;
   }
 }
 
@@ -307,6 +324,7 @@ async function getHistory(symbol) {
 async function getIntraday(symbol) {
   const cached = getCached(intradayCache, symbol, INTRADAY_TTL_MS);
   if (cached) return cached;
+  const stale = getStaleCached(intradayCache, symbol, 30 * 60 * 1000);
 
   let quote;
   let rows;
@@ -332,16 +350,28 @@ async function getIntraday(symbol) {
       rows = rowsFromChartQuotes(chartData.quotes);
       source = "yahoo-finance2-chart";
     } catch (fallbackErr) {
-      quote = await getQuote(symbol);
-      rows = [{
-        date: new Date(quote.regularMarketTime || Date.now()),
-        open: quote.regularMarketPrice,
-        high: quote.regularMarketPrice,
-        low: quote.regularMarketPrice,
-        close: quote.regularMarketPrice,
-        volume: quote.regularMarketVolume || 0
-      }];
-      source = quote.source || "quote-fallback";
+      try {
+        quote = await getQuote(symbol);
+        rows = [{
+          date: new Date(quote.regularMarketTime || Date.now()),
+          open: quote.regularMarketPrice,
+          high: quote.regularMarketPrice,
+          low: quote.regularMarketPrice,
+          close: quote.regularMarketPrice,
+          volume: quote.regularMarketVolume || 0
+        }];
+        source = quote.source || "quote-fallback";
+      } catch (quoteErr) {
+        if (stale) {
+          return {
+            ...stale,
+            stale: true,
+            source: `${stale.source || "cache"}-stale`
+          };
+        }
+
+        throw quoteErr;
+      }
     }
   }
 
@@ -357,6 +387,7 @@ async function getIntraday(symbol) {
     symbol: quote.symbol,
     marketState: quote.marketState,
     source,
+    stale: Boolean(quote.stale),
     previousClose: quote.regularMarketPreviousClose,
     price: quote.regularMarketPrice,
     time: quote.regularMarketTime || new Date().toISOString(),
@@ -1012,6 +1043,14 @@ app.post("/api/ai-analysis/:symbol", async (req, res) => {
       detail: err.message
     });
   }
+});
+
+app.get("/healthz", (req, res) => {
+  res.json({
+    ok: true,
+    uptime: Math.round(process.uptime()),
+    time: new Date().toISOString()
+  });
 });
 
 app.use(express.static("public"));

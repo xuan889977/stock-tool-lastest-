@@ -14,6 +14,11 @@ let lastTradeVolume = 0;
 let previousMarketVolume = null;
 let pollingTimer = null;
 let intradayTimer = null;
+let quoteInFlight = false;
+let intradayInFlight = false;
+let analysisInFlight = false;
+let quoteFailCount = 0;
+let intradayFailCount = 0;
 
 let buyPressure = 0;
 let sellPressure = 0;
@@ -77,6 +82,28 @@ function drawNoData(ctx, width, height, text) {
   ctx.font = "14px Arial";
   ctx.textAlign = "center";
   ctx.fillText(text, width / 2, height / 2);
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+
+    if (!res.ok) {
+      throw new Error(data.error || data.detail || "请求失败");
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getVolumePoints() {
@@ -835,7 +862,7 @@ async function fetchModelAiAnalysis(force = false) {
   document.getElementById("aiStatus").innerText = "正在结合大盘和AI模型分析...";
 
   try {
-    const res = await fetch(`/api/ai-analysis/${encodeURIComponent(quoteSymbol)}`, {
+    const data = await fetchJson(`/api/ai-analysis/${encodeURIComponent(quoteSymbol)}`, {
       method: "POST",
       headers: {
         "content-type": "application/json"
@@ -845,12 +872,7 @@ async function fetchModelAiAnalysis(force = false) {
         liveMetrics: getLiveAiMetrics(),
         localRule: lastLocalAiAnalysis
       })
-    });
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "AI分析请求失败");
-    }
+    }, 20000);
 
     renderAiResult(data);
   } catch (err) {
@@ -1229,50 +1251,77 @@ function renderEverySecond() {
 }
 
 async function fetchQuote() {
+  if (quoteInFlight) return;
+  quoteInFlight = true;
+
   try {
-    const res = await fetch(`/api/quote/${encodeURIComponent(quoteSymbol)}`);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "行情请求失败");
-    }
-
+    const data = await fetchJson(`/api/quote/${encodeURIComponent(quoteSymbol)}`, {}, 10000);
+    quoteFailCount = 0;
     handleQuote(data);
+
+    if (data.stale) {
+      document.getElementById("status").innerText = `${data.symbol} 行情源短暂波动，正在显示最近可用数据`;
+    }
   } catch (err) {
-    document.getElementById("status").innerText = "行情更新失败，5秒后重试";
-    addAlert(`${quoteSymbol} 行情更新失败：${err.message}`, "bad");
+    quoteFailCount += 1;
+
+    if (latestPrice !== null) {
+      document.getElementById("status").innerText = `${quoteSymbol} 行情短暂中断，保留上次价格并自动重试`;
+      if (quoteFailCount === 3 || quoteFailCount % 10 === 0) {
+        addAlert(`${quoteSymbol} 行情源不稳定，已保留上次数据：${err.message}`, "neutral");
+      }
+    } else {
+      document.getElementById("status").innerText = "正在唤醒服务和连接行情源，请稍候...";
+      if (quoteFailCount === 3 || quoteFailCount % 10 === 0) {
+        addAlert(`${quoteSymbol} 首次行情连接较慢：${err.message}`, "neutral");
+      }
+    }
+  } finally {
+    quoteInFlight = false;
   }
 }
 
 async function fetchAnalysis() {
+  if (analysisInFlight) return;
+  analysisInFlight = true;
+
   try {
-    const res = await fetch(`/api/analysis/${encodeURIComponent(quoteSymbol)}`);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "历史量价请求失败");
-    }
-
+    const data = await fetchJson(`/api/analysis/${encodeURIComponent(quoteSymbol)}`, {}, 18000);
     updateHistoryAnalysis(data);
   } catch (err) {
-    document.getElementById("historyRating").innerText = "历史量价加载失败";
-    document.getElementById("historyRating").className = "advice risk";
-    renderSignals("historySignals", [{ text: err.message, type: "bad" }]);
+    if (!historicalAnalysis) {
+      document.getElementById("historyRating").innerText = "历史量价连接中";
+      document.getElementById("historyRating").className = "advice hold";
+      renderSignals("historySignals", [{ text: "历史数据源较慢，正在自动重试", type: "neutral" }]);
+    }
+  } finally {
+    analysisInFlight = false;
   }
 }
 
 async function fetchIntraday() {
+  if (intradayInFlight) return;
+  intradayInFlight = true;
+
   try {
-    const res = await fetch(`/api/intraday/${encodeURIComponent(quoteSymbol)}`);
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || "分时数据请求失败");
-    }
-
+    const data = await fetchJson(`/api/intraday/${encodeURIComponent(quoteSymbol)}`, {}, 16000);
+    intradayFailCount = 0;
     updateIntradayChart(data);
+
+    if (data.stale) {
+      document.getElementById("intradayStatus").innerText = `${data.symbol} · 显示最近可用分时数据`;
+    }
   } catch (err) {
-    document.getElementById("intradayStatus").innerText = `分时图更新失败：${err.message}`;
+    intradayFailCount += 1;
+    document.getElementById("intradayStatus").innerText = intradayCloseData.length
+      ? "分时源短暂中断，保留当前图表并自动重试"
+      : "正在连接分时数据源，请稍候...";
+
+    if (intradayFailCount === 3 || intradayFailCount % 10 === 0) {
+      addAlert(`${quoteSymbol} 分时数据源不稳定：${err.message}`, "neutral");
+    }
+  } finally {
+    intradayInFlight = false;
   }
 }
 
@@ -1281,10 +1330,10 @@ function startQuotePolling() {
   fetchIntraday();
   fetchAnalysis();
   fetchQuote();
-  pollingTimer = setInterval(fetchQuote, 3000);
-  intradayTimer = setInterval(fetchIntraday, 6000);
-  analysisTimer = setInterval(fetchAnalysis, 60000);
-  aiAnalysisTimer = setInterval(() => fetchModelAiAnalysis(true), 60000);
+  pollingTimer = setInterval(fetchQuote, 5000);
+  intradayTimer = setInterval(fetchIntraday, 12000);
+  analysisTimer = setInterval(fetchAnalysis, 90000);
+  aiAnalysisTimer = setInterval(() => fetchModelAiAnalysis(true), 90000);
 }
 
 startQuotePolling();
